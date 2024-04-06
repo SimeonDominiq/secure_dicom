@@ -3,5 +3,6 @@ from . import views
 
 
 urlpatterns = [
-    path('upload/', views.encrypt_files)
+    path('encrypt-files/', views.encrypt_dicom_files),
+    path('decrypt-files/<str:file_hash>/', views.decrypt_dicom_files)
 ]
