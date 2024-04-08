@@ -12,7 +12,6 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 from django.conf import settings
-from django.http import HttpResponseBadRequest
 
 upload_dir = os.path.join(os.getcwd(), 'uploads')
 secret_dir = os.path.join(os.getcwd(), 'secrets')
@@ -81,17 +80,31 @@ def encrypt(data, key, iv):
 
 
 def decrypt_data(encrypted_data, key, iv):
-    # Creates a new cipher object for decryption, specifying the use of the AES algorithm in CBC mode, with the provided key and iv
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), default_backend())
     decryptor = cipher.decryptor()
 
     # decrypts the ciphertext using the decryptor object
     padded_plaintext = decryptor.update(encrypted_data) + decryptor.finalize()
-
-    # original plaintext was padded to fit the block size required by AES, this line initializes an unpadder object to remove that padding
     unpadder = padding.PKCS7(128).unpadder()
     plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
     return plaintext
+
+
+def encrypt_file(file, key, iv, uploads_path, secrets_path):
+    dicom_data = read_dicom_data(file)
+    encrypted_data = encrypt(dicom_data, key, iv)
+
+    with open(uploads_path, 'wb+') as destination:
+        destination.write(encrypted_data)
+
+    # Check if the secrets (holds the key & iv) directory exists, if not create one
+    if not os.path.exists(secret_dir):
+        os.makedirs(secret_dir)
+
+    # Save key and IV to a separate folder
+    key_iv_dict = {'key': key.hex(), 'iv': iv.hex()}
+    with open(secrets_path, 'w') as key_iv_file:
+        json.dump(key_iv_dict, key_iv_file)
 
 
 def save_decrypted_data_as_dicom(decrypted_data, decrypted_file_path):
@@ -115,26 +128,14 @@ def encrypt_dicom_files(request):
         if not os.path.exists(upload_dir):
             os.makedirs(upload_dir)
         for file in uploaded_files:
-            dicom_data = read_dicom_data(file)
             key, iv = generate_key_iv()
-            encrypted_data = encrypt(dicom_data, key, iv)
             file_hash = generate_random_filename()
-            file_path = os.path.join('uploads', file_hash)
-
-            with open(file_path, 'wb+') as destination:
-                destination.write(encrypted_data)
-
-            # Check if the secrets (holds the key & iv) directory exists, if not create one
-            if not os.path.exists(secret_dir):
-                os.makedirs(secret_dir)
-
-            # Save key and IV to a separate folder
-            key_iv_dict = {'key': key.hex(), 'iv': iv.hex()}
-            with open(os.path.join('secrets', file_hash + '.json'), 'w') as key_iv_file:
-                json.dump(key_iv_dict, key_iv_file)
+            uploads_path = os.path.join('uploads', file_hash)
+            secrets_path = os.path.join('secrets', file_hash + '.json')
+            encrypt_file(file, key, iv, uploads_path, secrets_path)
             uploaded_data.append(file_hash)
-        return Response({'uploaded_files': uploaded_data})
-    return HttpResponseBadRequest({'error': 'No files were uploaded'}, status=400)
+        return Response({'uploaded_files': uploaded_data}, status=200)
+    return Response({'error': 'No files were uploaded'}, status=400)
 
 
 @api_view(['GET'])
@@ -142,7 +143,7 @@ def decrypt_dicom_files(request, file_hash):
     # Check if the file hash exists
     key_iv_path = os.path.join(settings.BASE_DIR, 'secrets', file_hash + '.json')
     if not os.path.exists(key_iv_path):
-        return HttpResponseBadRequest('File not found')
+        return Response({'error': 'File not found'}, status=404)
 
     key, iv = retrieve_key_iv(key_iv_path)
     # Construct file paths
@@ -155,6 +156,6 @@ def decrypt_dicom_files(request, file_hash):
             encrypted_data = encrypted_file.read()
         decrypted_data = decrypt_data(encrypted_data, key, iv)
         save_decrypted_data_as_dicom(decrypted_data, decrypted_file_path)
-        return Response({'decrypted_file': decrypted_file_path})
+        return Response({'decrypted_file': decrypted_file_path}, status=200)
     except Exception as e:
-        return HttpResponseBadRequest('Error decrypting file: ' + str(e))
+        return Response({'error': 'Error decrypting file: ' + str(e)}, status=500)
